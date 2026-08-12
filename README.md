@@ -180,7 +180,7 @@ The Unlimited large test executes instead of triggering the Free limit.
 **Purchase HKD Checkpoint Unlimited:**
 
 ```text
-STRIPE_LINK_TO_BE_FILLED_IN
+https://buy.stripe.com/dRm00cf5927RgYacZ9gUM05
 ```
 
 Project:
