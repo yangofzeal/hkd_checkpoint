@@ -66,6 +66,76 @@ or approximately:
 
 The measured wall-clock acceleration can be substantially larger because repeated full-state serialization also incurs allocation, container, copying, and serialization overhead.
 
+## Why this matters for LLM training ##
+
+Large-model checkpointing is already a recognized systems bottleneck. PyTorch’s own checkpointing work exists specifically because repeatedly saving very large model states can interrupt training; PyTorch Distributed Checkpoint supports parallel save/load, and its async checkpoint APIs move checkpoint work off the critical training path, but they introduce extra memory/concurrency machinery rather than eliminating unchanged state from the save path. PyTorch has reported that older torch.save() workflows could take up to roughly 30 minutes for an 11B model, while newer distributed checkpointing brought checkpoint times for models up to 30B under four minutes; later process-based async checkpointing reported another roughly 6× improvement in training impact.
+
+For a typical LLM, checkpoint size scales quickly. A 7B-parameter model at 2 bytes/parameter is about 14 GB just for weights; training checkpoints are often much larger because optimizer state, master weights, RNG state, schedulers, and metadata may also be saved. A 70B model is about 140 GB of weights alone. Those are arithmetic estimates, not claims about a particular training stack. If every checkpoint rewrites tens or hundreds of gigabytes, the cost is not just disk capacity: it is GPU→CPU transfer, serialization, memory bandwidth, filesystem bandwidth, network traffic to remote/object storage, and training stalls or background contention. HKD Checkpoint is targeting the case where only a small active portion of that persistent state needs to be represented as new information.
+
+Your measured Linux CUDA result:
+
+```device=cuda
+exact=True
+cycle_gain_x=29.571217
+wall_clock_speedup_x=399.101154
+PASS=True```
+
+and Mac MPS result:
+
+```device=mps
+exact=True
+cycle_gain_x=29.571217
+wall_clock_speedup_x=215.044978
+PASS=True```
+
+are compelling because the structural result is the same on two accelerator stacks: instead of revisiting
+
+```60,000,000```
+
+state elements across the tested versions, HKD processes
+
+```2,029,000```
+
+initial-plus-active elements.
+
+For a systems engineer, the key idea is:
+```
+Conventional:
+checkpoint 1 -> full state
+checkpoint 2 -> full state
+checkpoint 3 -> full state
+...
+
+HKD:
+checkpoint 1 -> full state
+checkpoint 2 -> changed state
+checkpoint 3 -> changed state
+...
+```
+The cost model is therefore approximately:
+```
+standard = V × N
+HKD      = N + Σ active_changes
+```
+That is much more important than the specific 215× or 399× timing.
+
+The potentially large dollar impact
+
+Suppose a training job has a 200 GB effective checkpoint and creates 500 checkpoints. A full-write approach logically writes:
+```
+200 GB × 500 = 100 TB
+```
+of checkpoint state.
+
+If after the first checkpoint only 1% of the state must actually be represented as changed information, an idealized active-state path would be closer to:
+```
+200 GB + 499 × 2 GB
+≈ 1.2 TB
+```
+instead of 100 TB.
+
+That is roughly an 83× reduction in bytes that need new representation in this simplified example.
+
 ## Why the Gain Increases for Sparse Persistent State
 
 Suppose a state contains `N` elements and is checkpointed across `V` versions.
