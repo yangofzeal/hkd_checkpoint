@@ -21,209 +21,118 @@ checkpoint.append_delta("model.hkd", changed_indices, changed_values)
 state = checkpoint.load("model.hkd")
 ```
 
-The intended workload is a large persistent tensor, model, optimizer state, or checkpoint where only a small subset changes between successive versions. Instead of repeatedly processing the entire state, HKD Checkpoint preserves the established state and processes only the active changes.
+Instead of repeatedly processing the entire state, HKD Checkpoint preserves established state and processes only the active changes.
 
 ## Performance
 
-The included exact CPU benchmark uses a **2,000,000-element float32 state across 30 versions**, with only **1,000 elements changing per update**.
+The included exact benchmark uses a **2,000,000-element float32 state across 30 versions**, with only **1,000 elements changing per update**.
 
-The standard baseline repeatedly serializes the complete tensor using `torch.save()`. HKD Checkpoint processes the initial state once and thereafter applies only the exact changed coordinates.
+The standard baseline repeatedly serializes the complete tensor with `torch.save()`. HKD processes the initial state once and then applies only the changed coordinates.
 
-A benchmark of this workload produced:
-
-```text
-HKD_CHECKPOINT_FREE_BENCHMARK
-edition=FREE
-LABEL=NON_CHEAT_EXACT_SYNTHETIC_CPU_BENCHMARK
-elements=2000000
-versions=30
-active_per_update=1000
-exact=True
-baseline_cycles=60000000
-hkd_cycles=2029000
-cycle_gain_x=29.571217
-baseline_s=0.142116
-hkd_s=0.000780
-wall_clock_speedup_x=182.214110
-PASS=True
-```
-
-An earlier execution of the same benchmark measured approximately **153.5× wall-clock acceleration**. The precise elapsed-time ratio varies with Python, PyTorch, CPU, memory, storage, and operating-system behavior, so HKD Checkpoint reports both the measured runtime and the deterministic work reduction.
-
-The structural reduction in this test is:
+Measured results:
 
 ```text
-60,000,000 full-state element visits
-        ↓
- 2,029,000 initial + active-state element visits
-```
-
-or approximately:
-
-```text
-29.57× less state work
-```
-
-The measured wall-clock acceleration can be substantially larger because repeated full-state serialization also incurs allocation, container, copying, and serialization overhead.
-
-## Why this matters for LLM training ##
-
-Large-model checkpointing is already a recognized systems bottleneck. PyTorch’s own checkpointing work exists specifically because repeatedly saving very large model states can interrupt training; PyTorch Distributed Checkpoint supports parallel save/load, and its async checkpoint APIs move checkpoint work off the critical training path, but they introduce extra memory/concurrency machinery rather than eliminating unchanged state from the save path. PyTorch has reported that older torch.save() workflows could take up to roughly 30 minutes for an 11B model, while newer distributed checkpointing brought checkpoint times for models up to 30B under four minutes; later process-based async checkpointing reported another roughly 6× improvement in training impact.
-
-For a typical LLM, checkpoint size scales quickly. A 7B-parameter model at 2 bytes/parameter is about 14 GB just for weights; training checkpoints are often much larger because optimizer state, master weights, RNG state, schedulers, and metadata may also be saved. A 70B model is about 140 GB of weights alone. Those are arithmetic estimates, not claims about a particular training stack. If every checkpoint rewrites tens or hundreds of gigabytes, the cost is not just disk capacity: it is GPU→CPU transfer, serialization, memory bandwidth, filesystem bandwidth, network traffic to remote/object storage, and training stalls or background contention. HKD Checkpoint is targeting the case where only a small active portion of that persistent state needs to be represented as new information.
-
-Your measured Linux CUDA result:
-
-```device=cuda
-exact=True
-cycle_gain_x=29.571217
-wall_clock_speedup_x=399.101154
-PASS=True```
-
-and Mac MPS result:
-
-```device=mps
+Apple MPS
 exact=True
 cycle_gain_x=29.571217
 wall_clock_speedup_x=215.044978
-PASS=True```
+PASS=True
 
-are compelling because the structural result is the same on two accelerator stacks: instead of revisiting
-
-```60,000,000```
-
-state elements across the tested versions, HKD processes
-
-```2,029,000```
-
-initial-plus-active elements.
-
-For a systems engineer, the key idea is:
+NVIDIA CUDA / Linux
+exact=True
+cycle_gain_x=29.571217
+wall_clock_speedup_x=399.101154
+PASS=True
 ```
+
+The structural work reduction is:
+
+```text
+60,000,000 full-state element visits
+2,029,000 initial + active-state element visits
+```
+
+or:
+
+```text
+29.57x less state work
+```
+
+Wall-clock speedup depends on hardware, Python, PyTorch, memory, and serialization overhead, so the deterministic **29.57x work reduction** is the most portable result.
+
+## Why This Matters for LLM Training
+
+Large-model checkpointing can consume GPU-to-CPU bandwidth, CPU serialization time, memory bandwidth, filesystem bandwidth, network bandwidth, and training time.
+
+A 7B-parameter model at 2 bytes per parameter is about 14 GB of weights. A 70B-parameter model is about 140 GB of weights before optimizer state and other training state are included.
+
+If a training job has a 200 GB checkpoint and creates 500 checkpoints, repeatedly writing the full state represents:
+
+```text
+200 GB x 500 = 100 TB
+```
+
+If only 1% changes after the first checkpoint, an idealized active-state representation is:
+
+```text
+200 GB + 499 x 2 GB
+= about 1.2 TB
+```
+
+That is about an **83x reduction in newly represented checkpoint data** for this example.
+
+The basic difference is:
+
+```text
 Conventional:
 checkpoint 1 -> full state
 checkpoint 2 -> full state
 checkpoint 3 -> full state
-...
 
 HKD:
 checkpoint 1 -> full state
 checkpoint 2 -> changed state
 checkpoint 3 -> changed state
-...
 ```
-The cost model is therefore approximately:
-```
-standard = V × N
-HKD      = N + Σ active_changes
-```
-That is much more important than the specific 215× or 399× timing.
 
-The potentially large dollar impact
+## Active-State Theory
 
-Suppose a training job has a 200 GB effective checkpoint and creates 500 checkpoints. A full-write approach logically writes:
-```
-200 GB × 500 = 100 TB
-```
-of checkpoint state.
-
-If after the first checkpoint only 1% of the state must actually be represented as changed information, an idealized active-state path would be closer to:
-```
-200 GB + 499 × 2 GB
-≈ 1.2 TB
-```
-instead of 100 TB.
-
-That is roughly an 83× reduction in bytes that need new representation in this simplified example.
-
-## Why the Gain Increases for Sparse Persistent State
-
-Suppose a state contains `N` elements and is checkpointed across `V` versions.
-
-A repeated full-state strategy performs work proportional to:
+For state size `N`, number of versions `V`, and changed-state sets `Delta_t`:
 
 ```text
-N × V
+standard work = V x N
 ```
 
-HKD Checkpoint instead processes the state initially and then processes only the changed coordinates:
+HKD uses:
 
 ```text
-N + Δ1 + Δ2 + ... + Δ(V-1)
+HKD work = N + sum(|Delta_t|)
 ```
 
-where each `Δ` is the active portion of one update.
-
-For a large state with very sparse updates, the difference can become substantial.
-
-For example, if millions of parameters remain unchanged while only thousands change between checkpoints, HKD avoids repeatedly processing those unchanged parameters.
-
-## HKD∞ Active-State Theory
-
-The model can be written conceptually as:
+Conceptually:
 
 ```text
-S_(t+1) = UPDATE(S_t, Δ_t)
+S_(t+1) = UPDATE(S_t, Delta_t)
 ```
 
-where:
+The first checkpoint establishes the persistent state. Later checkpoints record only active changes required to reconstruct the next exact state.
 
-* `S_t` is the persistent state already established at version `t`.
-* `Δ_t` is the active state containing the coordinates that changed.
-* `UPDATE` deterministically reconstructs the next exact state.
-
-Conventional repeated checkpointing behaves approximately like:
-
-```text
-checkpoint(S_0)
-checkpoint(S_1)
-checkpoint(S_2)
-...
-```
-
-and repeatedly revisits the full state.
-
-HKD Checkpoint instead treats later checkpoints as continuations:
-
-```text
-checkpoint(S_0)
-checkpoint(Δ_1)
-checkpoint(Δ_2)
-...
-```
-
-The relevant work therefore changes from approximately:
-
-```text
-O(VN)
-```
-
-to:
-
-```text
-O(N + Σ|Δ_t|)
-```
-
-for workloads where changed coordinates are already known or tracked.
-
-The implementation uses deterministic active-state continuation and exact reconstruction. Internal representation, state-management details, update encoding, selection rules, and optimization techniques are proprietary and are not documented here.
+The implementation uses deterministic active-state continuation and exact reconstruction. Internal representation and optimization details are proprietary.
 
 ## Exactness
 
-Performance is not obtained by approximation.
-
-The included benchmark independently computes the final state through both the standard full-state path and the HKD active-state path and verifies:
+The benchmark computes the final state through both the standard full-state path and the HKD active-state path.
 
 ```text
 exact=True
 PASS=True
 ```
 
-Both paths must produce the identical final tensor.
+Performance is obtained without approximate reconstruction.
 
 ## Free Edition
 
-The Free edition supports checkpoint states containing up to:
+The Free edition supports up to:
 
 ```text
 2,000,000 float32 elements
@@ -235,15 +144,13 @@ Run:
 python test.py
 ```
 
-to execute the complete exact benchmark.
-
-The supplied `test_large.py` intentionally exceeds the Free limit:
+The included large test intentionally exceeds the Free limit:
 
 ```bash
 python test_large.py
 ```
 
-and produces:
+Expected result:
 
 ```text
 HKD_CHECKPOINT_FREE_LARGE_TEST
@@ -256,49 +163,16 @@ Visit https://github.com/yangofzeal/hkd_checkpoint to purchase HKD Checkpoint Un
 
 ## Unlimited Edition
 
-HKD Checkpoint Unlimited removes the HKD Checkpoint element-count restriction.
+HKD Checkpoint Unlimited removes the element-count restriction.
 
-The paid distribution includes a larger benchmark that processes:
-
-```text
-4,000,000 elements
-20 versions
-1,000 active elements per update
-```
-
-A tested run produced:
-
-```text
-HKD_CHECKPOINT_PAID_LARGE_TEST
-edition=PAID
-elements=4000000
-versions=20
-active_per_update=1000
-exact=True
-cycle_gain_x=19.905449
-wall_clock_speedup_x=333.147201
-PASS=True
-```
-
-Runtime ratios are workload- and machine-dependent; exact reconstruction and active-state work reduction are the core properties.
-
-## Verification
-
-Free edition:
+Run:
 
 ```bash
 python test.py
 python test_large.py
 ```
 
-Unlimited edition:
-
-```bash
-python test.py
-python test_large.py
-```
-
-The Free large test should reject the oversized workload. The Unlimited large test should execute it.
+The Unlimited large test executes instead of triggering the Free limit.
 
 ## Buy HKD Checkpoint Unlimited
 
@@ -313,5 +187,3 @@ Project:
 ```text
 https://github.com/yangofzeal/hkd_checkpoint
 ```
-
-::: 
