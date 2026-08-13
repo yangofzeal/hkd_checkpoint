@@ -61,7 +61,47 @@ or:
 
 Wall-clock speedup depends on hardware, Python, PyTorch, memory, and serialization overhead, so the deterministic **29.57x work reduction** is the most portable result.
 
-HKD Checkpoint and HKD Incremental substantially outperform conventional full recomputation/full serialization baselines in our exact benchmarks. HKD Checkpoint measured 215x on Apple MPS and 399x on NVIDIA CUDA versus repeated full torch.save(), while HKD Incremental measured about 644x versus repeated full Python recomputation. Comparisons against specialized state-of-the-art incremental and distributed checkpointing systems remain to be benchmarked directly.
+HKD Checkpoint and HKD Incremental substantially outperform conventional full recomputation/full serialization baselines in our exact benchmarks. HKD Checkpoint measured 215x on Apple MPS and 399x on NVIDIA CUDA versus repeated full torch.save(), while HKD Incremental measured about 644x versus repeated full Python recomputation.
+
+## Checkpoint Benchmark vs. Common PyTorch Save Paths
+
+The included benchmark compares HKD Checkpoint against the main drop-in Python/PyTorch checkpoint save paths: `torch.save()`, Safetensors, PyTorch Distributed Checkpoint `dcp.save()`, and `dcp.async_save()`.
+
+Test workload:
+
+```text
+2,000,000 float32 elements
+30 versions
+1,000 changed elements per update
+actual file writes
+fsync enabled
+exact final-state verification
+exact HKD reload verification
+```
+
+Measured on macOS with PyTorch 2.8.0:
+
+```text
+torch.save:      0.621477 s   240041710 bytes
+safetensors:     0.388230 s   240002400 bytes
+dcp.save:        0.451162 s   240074180 bytes
+dcp.async_save:  0.437791 s   240074360 bytes
+hkd_checkpoint:  0.013366 s     8348248 bytes
+```
+
+HKD Checkpoint speedup:
+
+```text
+vs torch.save:      46.50x
+vs safetensors:     29.05x
+vs dcp.save:        33.75x
+vs dcp.async_save:  32.75x
+```
+
+HKD also wrote about **28.75x fewer bytes** while preserving exact reconstruction.
+
+These baselines cover the major drop-in Python/PyTorch checkpoint acceleration paths for repeated model saving. HKD targets a different source of cost: instead of repeatedly serializing the full persistent state, it writes the initial state once and then records only the active changes.
+
 
 ## Why This Matters for LLM Training
 
