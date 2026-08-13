@@ -100,7 +100,12 @@ vs dcp.async_save:  32.75x
 
 HKD also wrote about **28.75x fewer bytes** while preserving exact reconstruction.
 
-These baselines cover the major drop-in Python/PyTorch checkpoint acceleration paths for repeated model saving. HKD targets a different source of cost: instead of repeatedly serializing the full persistent state, it writes the initial state once and then records only the active changes.
+These baselines cover the major drop-in Python/PyTorch checkpoint acceleration paths for repeated model saving. HKD targets a different source of cost: instead of repeatedly serializing the full persistent state, it writes the initial state once and then records only the active changes.  You can run the test yourself:
+
+```cd dist_macos ## mac
+cd dist_linux ## linux
+python benchmark_sota_checkpoint.py
+```
 
 
 ## Why This Matters for LLM Training
