@@ -61,6 +61,8 @@ or:
 
 Wall-clock speedup depends on hardware, Python, PyTorch, memory, and serialization overhead, so the deterministic **29.57x work reduction** is the most portable result.
 
+HKD Checkpoint and HKD Incremental substantially outperform conventional full recomputation/full serialization baselines in our exact benchmarks. HKD Checkpoint measured 215x on Apple MPS and 399x on NVIDIA CUDA versus repeated full torch.save(), while HKD Incremental measured about 644x versus repeated full Python recomputation. Comparisons against specialized state-of-the-art incremental and distributed checkpointing systems remain to be benchmarked directly.
+
 ## Why This Matters for LLM Training
 
 Large-model checkpointing can consume GPU-to-CPU bandwidth, CPU serialization time, memory bandwidth, filesystem bandwidth, network bandwidth, and training time.
