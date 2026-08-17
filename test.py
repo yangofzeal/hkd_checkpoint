@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 import io, sys, time
-from pathlib import Path
+import os
 import torch
 
-ROOT = Path(__file__).resolve().parent
-sys.path.insert(0, str(ROOT))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT)
 import hkd_checkpoint
 
-N = 2_000_000
+N = 2000000
 VERSIONS = 30
-ACTIVE = 1_000
+ACTIVE = 1000
 SEED = 20260812
 
 DEVICE = hkd_checkpoint.select_device()
@@ -57,12 +56,12 @@ bc = N * VERSIONS
 hc = N + (VERSIONS - 1) * ACTIVE
 
 print("HKD_CHECKPOINT_BENCHMARK")
-print(f"edition={hkd_checkpoint.EDITION}")
-print(f"module={Path(hkd_checkpoint.__file__).resolve()}")
-print(f"device={DEVICE.type}")
-print(f"exact={exact}")
-print(f"cycle_gain_x={bc/hc:.6f}")
-print(f"wall_clock_speedup_x={baseline_s/hkd_s:.6f}")
-print(f"PASS={exact}")
+print("edition={}".format(hkd_checkpoint.EDITION))
+print("module={}".format(os.path.abspath(hkd_checkpoint.__file__)))
+print("device={}".format(DEVICE.type))
+print("exact={}".format(exact))
+print("cycle_gain_x={:.6f}".format(bc/hc))
+print("wall_clock_speedup_x={:.6f}".format(baseline_s/hkd_s))
+print("PASS={}".format(exact))
 if not exact:
     raise SystemExit(1)
